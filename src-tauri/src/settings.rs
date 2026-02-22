@@ -360,6 +360,10 @@ pub struct AppSettings {
     #[serde(default = "default_typing_tool")]
     pub typing_tool: TypingTool,
     pub external_script_path: Option<String>,
+    #[serde(default = "default_api_enabled")]
+    pub api_enabled: bool,
+    #[serde(default = "default_api_port")]
+    pub api_port: u16,
 }
 
 fn default_model() -> String {
@@ -570,6 +574,14 @@ fn default_typing_tool() -> TypingTool {
     TypingTool::Auto
 }
 
+fn default_api_enabled() -> bool {
+    false
+}
+
+fn default_api_port() -> u16 {
+    9876
+}
+
 fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
     let mut changed = false;
     for provider in default_post_process_providers() {
@@ -724,6 +736,8 @@ pub fn get_default_settings() -> AppSettings {
         paste_delay_ms: default_paste_delay_ms(),
         typing_tool: default_typing_tool(),
         external_script_path: None,
+        api_enabled: default_api_enabled(),
+        api_port: default_api_port(),
     }
 }
 

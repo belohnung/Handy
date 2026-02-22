@@ -621,6 +621,62 @@ pub fn change_autostart_setting(app: AppHandle, enabled: bool) -> Result<(), Str
 
 #[tauri::command]
 #[specta::specta]
+pub fn change_api_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    let was_enabled = settings.api_enabled;
+    settings.api_enabled = enabled;
+    settings::write_settings(&app, settings.clone());
+
+    let handle = app.state::<crate::api::ApiServerHandle>();
+
+    // Start or stop the API server based on the new setting
+    if enabled && !was_enabled {
+        handle.start(&app, settings.api_port)?;
+    } else if !enabled && was_enabled {
+        handle.shutdown();
+    }
+
+    let _ = app.emit(
+        "settings-changed",
+        serde_json::json!({
+            "setting": "api_enabled",
+            "value": enabled
+        }),
+    );
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_api_port_setting(app: AppHandle, port: u16) -> Result<(), String> {
+    if port == 0 {
+        return Err("Port must be greater than 0".to_string());
+    }
+
+    let mut settings = settings::get_settings(&app);
+    settings.api_port = port;
+    settings::write_settings(&app, settings.clone());
+
+    // If the API is currently enabled, restart the server on the new port
+    if settings.api_enabled {
+        let handle = app.state::<crate::api::ApiServerHandle>();
+        handle.start(&app, port)?;
+    }
+
+    let _ = app.emit(
+        "settings-changed",
+        serde_json::json!({
+            "setting": "api_port",
+            "value": port
+        }),
+    );
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn change_update_checks_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);
     settings.update_checks_enabled = enabled;
