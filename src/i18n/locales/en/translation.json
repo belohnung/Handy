@@ -226,7 +226,8 @@
         "output": "Output",
         "transcription": "Transcription",
         "history": "History",
-        "experimental": "Experimental"
+        "experimental": "Experimental",
+        "api": "HTTP API"
       },
       "experimentalToggle": {
         "label": "Experimental Features",
@@ -452,6 +453,16 @@
         "title": "Keyboard Implementation",
         "description": "Choose the keyboard shortcut backend.",
         "bindingsReset": "Keyboard shortcuts were incompatible and reset to defaults"
+      },
+      "api": {
+        "enabled": {
+          "label": "HTTP API",
+          "description": "Expose a local REST + WebSocket API on 127.0.0.1 for external tools and custom frontends."
+        },
+        "port": {
+          "title": "API Port",
+          "description": "TCP port for the HTTP API server. Changes take effect immediately."
+        }
       },
       "paths": {
         "appData": "App Data:",
