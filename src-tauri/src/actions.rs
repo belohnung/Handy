@@ -15,10 +15,47 @@ use ferrous_opencc::{config::BuiltinConfig, OpenCC};
 use log::{debug, error, warn};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::AppHandle;
 use tauri::Manager;
+
+/// Shared state that holds an optional per-recording context string.
+///
+/// External callers (e.g. the HTTP API) can set this before triggering a
+/// transcription with post-processing.  The post-processing pipeline reads
+/// (and clears) the value so it is only applied once.
+///
+/// The `${context}` placeholder inside prompt templates is replaced with
+/// the stored context, or removed if no context was provided.
+///
+/// **Note:** Because the context is stored globally and consumed later when
+/// recording finishes, a second API call with different context could
+/// overwrite the first before it is consumed.  This is acceptable for a
+/// single-user local desktop app.  A future improvement could thread the
+/// context through [`TranscriptionCoordinator`]'s command channel for
+/// stricter per-invocation binding.
+pub struct TranscriptionContext {
+    context: Mutex<Option<String>>,
+}
+
+impl TranscriptionContext {
+    pub fn new() -> Self {
+        Self {
+            context: Mutex::new(None),
+        }
+    }
+
+    /// Store a context string for the next post-processing run.
+    pub fn set(&self, ctx: String) {
+        *self.context.lock().unwrap() = Some(ctx);
+    }
+
+    /// Take (and clear) the stored context.
+    pub fn take(&self) -> Option<String> {
+        self.context.lock().unwrap().take()
+    }
+}
 
 /// Drop guard that notifies the [`TranscriptionCoordinator`] when the
 /// transcription pipeline finishes — whether it completes normally or panics.
@@ -52,11 +89,20 @@ fn strip_invisible_chars(s: &str) -> String {
 
 /// Build a system prompt from the user's prompt template.
 /// Removes `${output}` placeholder since the transcription is sent as the user message.
-fn build_system_prompt(prompt_template: &str) -> String {
-    prompt_template.replace("${output}", "").trim().to_string()
+/// Replaces `${context}` with the provided context, or removes it if empty.
+fn build_system_prompt(prompt_template: &str, context: &str) -> String {
+    prompt_template
+        .replace("${output}", "")
+        .replace("${context}", context)
+        .trim()
+        .to_string()
 }
 
-async fn post_process_transcription(settings: &AppSettings, transcription: &str) -> Option<String> {
+async fn post_process_transcription(
+    settings: &AppSettings,
+    transcription: &str,
+    context: Option<String>,
+) -> Option<String> {
     let provider = match settings.active_post_process_provider().cloned() {
         Some(provider) => provider,
         None => {
@@ -121,7 +167,8 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
     if provider.supports_structured_output {
         debug!("Using structured outputs for provider '{}'", provider.id);
 
-        let system_prompt = build_system_prompt(&prompt);
+        let ctx = context.as_deref().unwrap_or("");
+        let system_prompt = build_system_prompt(&prompt, ctx);
         let user_content = transcription.to_string();
 
         // Handle Apple Intelligence separately since it uses native Swift APIs
@@ -233,8 +280,11 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         }
     }
 
-    // Legacy mode: Replace ${output} variable in the prompt with the actual text
-    let processed_prompt = prompt.replace("${output}", transcription);
+    // Legacy mode: Replace ${output} and ${context} variables in the prompt
+    let ctx = context.as_deref().unwrap_or("");
+    let processed_prompt = prompt
+        .replace("${output}", transcription)
+        .replace("${context}", ctx);
     debug!("Processed prompt length: {} chars", processed_prompt.len());
 
     match crate::llm_client::send_chat_completion(&provider, api_key, &model, processed_prompt)
@@ -378,7 +428,7 @@ impl ShortcutAction for TranscribeAction {
         );
     }
 
-    fn stop(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
+    fn stop(&self, app: &AppHandle, binding_id: &str, shortcut_str: &str) {
         // Unregister the cancel shortcut when transcription stops
         shortcut::unregister_cancel_shortcut(app);
 
@@ -400,6 +450,7 @@ impl ShortcutAction for TranscribeAction {
         play_feedback_sound(app, SoundType::Stop);
 
         let binding_id = binding_id.to_string(); // Clone binding_id for the async task
+        let source = shortcut_str.to_string();
         let post_process = self.post_process;
 
         tauri::async_runtime::spawn(async move {
@@ -445,8 +496,12 @@ impl ShortcutAction for TranscribeAction {
                             if post_process {
                                 show_processing_overlay(&ah);
                             }
+                            // Take the per-recording context (if any) from shared state
+                            let context = ah
+                                .try_state::<TranscriptionContext>()
+                                .and_then(|tc| tc.take());
                             let processed = if post_process {
-                                post_process_transcription(&settings, &final_text).await
+                                post_process_transcription(&settings, &final_text, context).await
                             } else {
                                 None
                             };
@@ -486,26 +541,37 @@ impl ShortcutAction for TranscribeAction {
                                 }
                             });
 
-                            // Paste the final text (either processed or original)
-                            let ah_clone = ah.clone();
-                            let paste_time = Instant::now();
-                            ah.run_on_main_thread(move || {
-                                match utils::paste(final_text, ah_clone.clone()) {
-                                    Ok(()) => debug!(
-                                        "Text pasted successfully in {:?}",
-                                        paste_time.elapsed()
-                                    ),
-                                    Err(e) => error!("Failed to paste transcription: {}", e),
-                                }
-                                // Hide the overlay after transcription is complete
-                                utils::hide_recording_overlay(&ah_clone);
-                                change_tray_icon(&ah_clone, TrayIconState::Idle);
-                            })
-                            .unwrap_or_else(|e| {
-                                error!("Failed to run paste on main thread: {:?}", e);
+                            // Paste the final text -- but only for interactive
+                            // sources (keyboard shortcuts, tray). Programmatic
+                            // callers (HTTP API) retrieve text via the history
+                            // endpoint instead.
+                            if source == "HTTP API" {
+                                debug!(
+                                    "API-triggered transcription; skipping paste, text available via history"
+                                );
                                 utils::hide_recording_overlay(&ah);
                                 change_tray_icon(&ah, TrayIconState::Idle);
-                            });
+                            } else {
+                                let ah_clone = ah.clone();
+                                let paste_time = Instant::now();
+                                ah.run_on_main_thread(move || {
+                                    match utils::paste(final_text, ah_clone.clone()) {
+                                        Ok(()) => debug!(
+                                            "Text pasted successfully in {:?}",
+                                            paste_time.elapsed()
+                                        ),
+                                        Err(e) => error!("Failed to paste transcription: {}", e),
+                                    }
+                                    // Hide the overlay after transcription is complete
+                                    utils::hide_recording_overlay(&ah_clone);
+                                    change_tray_icon(&ah_clone, TrayIconState::Idle);
+                                })
+                                .unwrap_or_else(|e| {
+                                    error!("Failed to run paste on main thread: {:?}", e);
+                                    utils::hide_recording_overlay(&ah);
+                                    change_tray_icon(&ah, TrayIconState::Idle);
+                                });
+                            }
                         } else {
                             utils::hide_recording_overlay(&ah);
                             change_tray_icon(&ah, TrayIconState::Idle);

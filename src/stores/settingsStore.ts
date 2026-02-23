@@ -135,6 +135,8 @@ const settingUpdaters: {
     commands.changeExperimentalEnabledSetting(value as boolean),
   show_tray_icon: (value) =>
     commands.changeShowTrayIconSetting(value as boolean),
+  api_enabled: (value) => commands.changeApiEnabledSetting(value as boolean),
+  api_port: (value) => commands.changeApiPortSetting(value as number),
 };
 
 export const useSettingsStore = create<SettingsStore>()(

@@ -1,4 +1,5 @@
 mod actions;
+mod api;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod apple_intelligence;
 mod audio_feedback;
@@ -235,6 +236,19 @@ fn initialize_core_logic(app_handle: &AppHandle) {
 
     // Create the recording overlay window (hidden by default)
     utils::create_recording_overlay(app_handle);
+
+    // Manage the API server handle once (supports start/stop/restart)
+    let api_handle = api::ApiServerHandle::new();
+    app_handle.manage(api_handle);
+
+    // Start API server if enabled in settings
+    let settings = settings::get_settings(app_handle);
+    if settings.api_enabled {
+        let handle = app_handle.state::<api::ApiServerHandle>();
+        if let Err(e) = handle.start(app_handle, settings.api_port) {
+            log::error!("Failed to start API server: {e}");
+        }
+    }
 }
 
 #[tauri::command]
@@ -297,6 +311,8 @@ pub fn run(cli_args: CliArgs) {
         shortcut::change_keyboard_implementation_setting,
         shortcut::get_keyboard_implementation,
         shortcut::change_show_tray_icon_setting,
+        shortcut::change_api_enabled_setting,
+        shortcut::change_api_port_setting,
         shortcut::handy_keys::start_handy_keys_recording,
         shortcut::handy_keys::stop_handy_keys_recording,
         trigger_update_check,
@@ -429,6 +445,7 @@ pub fn run(cli_args: CliArgs) {
             FILE_LOG_LEVEL.store(file_log_level.to_level_filter() as u8, Ordering::Relaxed);
             let app_handle = app.handle().clone();
             app.manage(TranscriptionCoordinator::new(app_handle.clone()));
+            app.manage(actions::TranscriptionContext::new());
 
             initialize_core_logic(&app_handle);
 

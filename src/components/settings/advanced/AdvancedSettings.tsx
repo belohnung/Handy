@@ -16,6 +16,7 @@ import { AppendTrailingSpace } from "../AppendTrailingSpace";
 import { HistoryLimit } from "../HistoryLimit";
 import { RecordingRetentionPeriodSelector } from "../RecordingRetentionPeriod";
 import { ExperimentalToggle } from "../ExperimentalToggle";
+import { ApiToggle, ApiPortSetting } from "../ApiSettings";
 import { useSettings } from "../../../hooks/useSettings";
 import { KeyboardImplementationSelector } from "../debug/KeyboardImplementationSelector";
 
@@ -62,6 +63,13 @@ export const AdvancedSettings: React.FC = () => {
             descriptionMode="tooltip"
             grouped={true}
           />
+        </SettingsGroup>
+      )}
+
+      {experimentalEnabled && (
+        <SettingsGroup title={t("settings.advanced.groups.api")}>
+          <ApiToggle descriptionMode="tooltip" grouped={true} />
+          <ApiPortSetting descriptionMode="tooltip" grouped={true} />
         </SettingsGroup>
       )}
     </div>
